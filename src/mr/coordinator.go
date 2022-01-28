@@ -1,18 +1,162 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
 
+type TaskStatus int32
+
+const (
+	Idle       TaskStatus = 0
+	InProgress TaskStatus = 1
+	Completed  TaskStatus = 2
+)
+
+type Task struct {
+	name   []string
+	status TaskStatus
+}
 
 type Coordinator struct {
 	// Your definitions here.
-
+	MapTask    []Task
+	ReduceTask []Task
+	NReduce    int
 }
 
+var lock sync.RWMutex
+
+var mapDone bool = false
+var reduceDone bool = false
+
 // Your code here -- RPC handlers for the worker to call.
+func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
+	if args.ReqNumber == 1 {
+		lock.Lock()
+
+		if !mapDone {
+			if mapTask, mapStatus := AssignTask(c.MapTask); mapStatus >= 0 {
+				// lock.Lock()
+
+				reply.TypeName = "map"
+				reply.Content = mapTask.name
+				reply.Idx = mapStatus
+				reply.NReduce = c.NReduce
+
+				mapTask.status = InProgress
+
+				// lock.Unlock()
+
+				go CheckStatus(mapTask)
+
+			} else if mapStatus == -1 {
+				// lock.Lock()
+				mapDone = true
+				// lock.Unlock()
+			} else {
+				// lock.Lock()
+				reply.TypeName = "allinprogress"
+				// lock.Unlock()
+			}
+		} else if !reduceDone {
+			if redTask, redStatus := AssignTask(c.ReduceTask); redStatus >= 0 {
+				// lock.Lock()
+				reply.TypeName = "reduce"
+				reply.Idx = redStatus
+				reply.Content = redTask.name
+				reply.NReduce = c.NReduce
+
+				redTask.status = InProgress
+				// lock.Unlock()
+
+				go CheckStatus(redTask)
+			} else if redStatus == -1 {
+				// lock.Lock()
+				reduceDone = true
+				// lock.Unlock()
+			} else {
+				// lock.Lock()
+				reply.TypeName = "allinprogress"
+				// lock.Unlock()
+			}
+		} else {
+			// lock.Lock()
+			reply.TypeName = "finish"
+			// lock.Unlock()
+		}
+		lock.Unlock()
+	}
+	return nil
+}
+
+func CheckStatus(t *Task) {
+	time.Sleep(10 * time.Second)
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	if t.status != Completed {
+		t.status = Idle
+	}
+}
+
+func (c *Coordinator) HandFinishInfo(args *FinishReq, reply *FinishReply) error {
+	idx := args.Idx
+	if args.TaskStr == "map" {
+		//考虑状态
+		//写入reduce任务
+		lock.Lock()
+
+		if c.MapTask[idx].status != Completed {
+			for i := range c.ReduceTask {
+				c.ReduceTask[i].name = append(c.ReduceTask[i].name, args.Ret[i])
+			}
+			c.MapTask[idx].status = Completed
+		}
+
+		lock.Unlock()
+	}
+
+	if args.TaskStr == "reduce" {
+
+		lock.Lock()
+
+		if c.ReduceTask[idx].status != Completed {
+			c.ReduceTask[idx].status = Completed
+		}
+
+		lock.Unlock()
+	}
+	return nil
+}
+
+func AssignTask(tasks []Task) (*Task, int) {
+	for i := range tasks {
+		if tasks[i].status == Idle {
+			return &tasks[i], i
+		}
+	}
+	if WorkDone(tasks) {
+		return nil, -1 //work done
+	} else {
+		return nil, -2 //all in progress wait
+	}
+}
+
+func WorkDone(tasks []Task) bool {
+	for i := range tasks {
+		if tasks[i].status != Completed {
+			return false
+		}
+	}
+	return true
+}
 
 //
 // an example RPC handler.
@@ -23,7 +167,6 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -49,7 +192,11 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	lock.RLock()
+	defer lock.RUnlock()
+	if WorkDone(c.MapTask) && WorkDone(c.ReduceTask) {
+		ret = true
+	}
 
 	return ret
 }
@@ -63,7 +210,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
+	c.NReduce = nReduce
+	c.MapTask = make([]Task, len(files))
+	for i := range files {
+		c.MapTask[i].name = append(c.MapTask[i].name, files[i])
+		c.MapTask[i].status = Idle
+	}
 
+	c.ReduceTask = make([]Task, nReduce)
+	for i := range c.ReduceTask {
+		c.ReduceTask[i].status = Idle
+	}
 
 	c.server()
 	return &c
