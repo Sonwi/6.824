@@ -32,14 +32,14 @@ type Coordinator struct {
 
 var lock sync.RWMutex
 
+var lockBool sync.RWMutex
 var mapDone bool = false
 var reduceDone bool = false
 
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 	if args.ReqNumber == 1 {
-		lock.Lock()
-
+		lockBool.RLock()
 		if !mapDone {
 			if mapTask, mapStatus := AssignTask(c.MapTask); mapStatus >= 0 {
 				// lock.Lock()
@@ -49,15 +49,19 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 				reply.Idx = mapStatus
 				reply.NReduce = c.NReduce
 
+				lock.Lock()
 				mapTask.status = InProgress
-
+				lock.Unlock()
 				// lock.Unlock()
 
 				go CheckStatus(mapTask)
 
 			} else if mapStatus == -1 {
-				// lock.Lock()
+				lockBool.RUnlock()
+				lockBool.Lock()
 				mapDone = true
+				lockBool.Unlock()
+				lockBool.RLock()
 				// lock.Unlock()
 			} else {
 				// lock.Lock()
@@ -66,20 +70,22 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 			}
 		} else if !reduceDone {
 			if redTask, redStatus := AssignTask(c.ReduceTask); redStatus >= 0 {
-				// lock.Lock()
 				reply.TypeName = "reduce"
 				reply.Idx = redStatus
 				reply.Content = redTask.name
 				reply.NReduce = c.NReduce
 
+				lock.Lock()
 				redTask.status = InProgress
-				// lock.Unlock()
+				lock.Unlock()
 
 				go CheckStatus(redTask)
 			} else if redStatus == -1 {
-				// lock.Lock()
+				lockBool.RUnlock()
+				lockBool.Lock()
 				reduceDone = true
-				// lock.Unlock()
+				lockBool.Unlock()
+				lockBool.RLock()
 			} else {
 				// lock.Lock()
 				reply.TypeName = "allinprogress"
@@ -90,7 +96,7 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 			reply.TypeName = "finish"
 			// lock.Unlock()
 		}
-		lock.Unlock()
+		lockBool.RUnlock()
 	}
 	return nil
 }
@@ -137,6 +143,8 @@ func (c *Coordinator) HandFinishInfo(args *FinishReq, reply *FinishReply) error 
 }
 
 func AssignTask(tasks []Task) (*Task, int) {
+	lock.RLock()
+	defer lock.RUnlock()
 	for i := range tasks {
 		if tasks[i].status == Idle {
 			return &tasks[i], i
@@ -150,6 +158,8 @@ func AssignTask(tasks []Task) (*Task, int) {
 }
 
 func WorkDone(tasks []Task) bool {
+	lock.RLock()
+	defer lock.RUnlock()
 	for i := range tasks {
 		if tasks[i].status != Completed {
 			return false
@@ -192,9 +202,14 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	lock.RLock()
-	defer lock.RUnlock()
-	if WorkDone(c.MapTask) && WorkDone(c.ReduceTask) {
+	// lock.RLock()
+	// defer lock.RUnlock()
+	// if WorkDone(c.MapTask) && WorkDone(c.ReduceTask) {
+	// 	ret = true
+	// }
+	lockBool.RLock()
+	defer lockBool.RUnlock()
+	if mapDone && reduceDone {
 		ret = true
 	}
 

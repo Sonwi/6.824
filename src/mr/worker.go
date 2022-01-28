@@ -10,7 +10,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"time"
 )
 
 //
@@ -132,12 +131,12 @@ func Worker(mapf func(string, string) []KeyValue,
 							//call finish info
 							args := FinishReq{TaskStr: "map", Ret: outNames, Idx: reply1.Idx}
 							reply := FinishReply{}
-							ok := call("Coordinator.HandFinishInfo", &args, &reply)
-							if ok {
-								log.Println("finish job success")
-							} else {
-								log.Println("finish job fail")
-							}
+							call("Coordinator.HandFinishInfo", &args, &reply)
+							// if ok {
+							// 	log.Println("finish map job success")
+							// } else {
+							// 	log.Println("finish map job fail")
+							// }
 						} else {
 							os.Remove(tempFiles[i].Name())
 						}
@@ -153,7 +152,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				oTmpFile, _ := ioutil.TempFile(".", "reout*.txt")
 				kvaMap := make(map[string]*ReduceKv)
 
-				log.Printf("reduce work %v file length %v", idx, len(inputFileNames))
+				// log.Printf("reduce work %v file length %v", idx, len(inputFileNames))
 
 				for _, filename := range inputFileNames {
 					file, err := os.Open(filename)
@@ -192,22 +191,26 @@ func Worker(mapf func(string, string) []KeyValue,
 					os.Rename(oTmpFile.Name(), oname)
 					args := FinishReq{TaskStr: "reduce", Ret: append(retName, oname), Idx: idx}
 					reply := FinishReply{}
-					ok := call("Coordinator.HandFinishInfo", &args, &reply)
-					if ok {
-						log.Println("finish job success")
-					} else {
-						log.Println("finish job fail")
-					}
+					call("Coordinator.HandFinishInfo", &args, &reply)
+					// if ok {
+					// 	log.Println("finish reduce job success")
+					// } else {
+					// 	log.Println("finish reduce job fail")
+					// }
 				} else {
 					os.Remove(oTmpFile.Name())
 				}
-			} else if reply1.TypeName == "allinprogress" {
-				log.Println("all in progress wait")
-			} else {
-				return
-			}
+			} //else if reply1.TypeName == "allinprogress" {
+			// 	log.Println("all in progress wait")
+			// } else {
+			// 	// time.Sleep(10 * time.Second)
+			// 	log.Println("all job complete, wait to exit")
+			// 	// return
+			// }
+		} else {
+			break
 		}
-		time.Sleep(10 * time.Second)
+		// time.Sleep(1 * time.Second)
 	}
 
 	// uncomment to send the Example RPC to the coordinator.
