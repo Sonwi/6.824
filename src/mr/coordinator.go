@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-type TaskStatus int32
+type TaskStatus int8
 
 const (
 	Idle       TaskStatus = 0
@@ -19,20 +19,21 @@ const (
 )
 
 type Task struct {
-	name   []string
-	status TaskStatus
+	inputFileName []string   //输入文件
+	status        TaskStatus //任务状态
 }
 
 type Coordinator struct {
 	// Your definitions here.
 	MapTask    []Task
 	ReduceTask []Task
-	NReduce    int
+	NReduce    int //记录reduce worker数目 关系到map输出的文件数
 }
 
-var lock sync.RWMutex
+var coordinateLock sync.RWMutex //用于控制Coordinate结构内变量的访问
+var lockBool sync.RWMutex       //控制mapDone 和 reduceDone
 
-var lockBool sync.RWMutex
+//标识任务完成状态
 var mapDone bool = false
 var reduceDone bool = false
 
@@ -45,13 +46,13 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 				// lock.Lock()
 
 				reply.TypeName = "map"
-				reply.Content = mapTask.name
+				reply.Content = mapTask.inputFileName
 				reply.Idx = mapStatus
 				reply.NReduce = c.NReduce
 
-				lock.Lock()
+				coordinateLock.Lock()
 				mapTask.status = InProgress
-				lock.Unlock()
+				coordinateLock.Unlock()
 				// lock.Unlock()
 
 				go CheckStatus(mapTask)
@@ -72,12 +73,12 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 			if redTask, redStatus := AssignTask(c.ReduceTask); redStatus >= 0 {
 				reply.TypeName = "reduce"
 				reply.Idx = redStatus
-				reply.Content = redTask.name
+				reply.Content = redTask.inputFileName
 				reply.NReduce = c.NReduce
 
-				lock.Lock()
+				coordinateLock.Lock()
 				redTask.status = InProgress
-				lock.Unlock()
+				coordinateLock.Unlock()
 
 				go CheckStatus(redTask)
 			} else if redStatus == -1 {
@@ -101,11 +102,12 @@ func (c *Coordinator) HandWorkerReq(args *ReqArgs, reply *ReqReply) error {
 	return nil
 }
 
+//检查任务状态
 func CheckStatus(t *Task) {
 	time.Sleep(10 * time.Second)
 
-	lock.Lock()
-	defer lock.Unlock()
+	coordinateLock.Lock()
+	defer coordinateLock.Unlock()
 
 	if t.status != Completed {
 		t.status = Idle
@@ -114,52 +116,52 @@ func CheckStatus(t *Task) {
 
 func (c *Coordinator) HandFinishInfo(args *FinishReq, reply *FinishReply) error {
 	idx := args.Idx
-	if args.TaskStr == "map" {
-		//考虑状态
-		//写入reduce任务
-		lock.Lock()
+	if args.TypeName == "map" {
+		coordinateLock.Lock()
 
 		if c.MapTask[idx].status != Completed {
 			for i := range c.ReduceTask {
-				c.ReduceTask[i].name = append(c.ReduceTask[i].name, args.Ret[i])
+				c.ReduceTask[i].inputFileName = append(c.ReduceTask[i].inputFileName, args.Ret[i])
 			}
 			c.MapTask[idx].status = Completed
 		}
 
-		lock.Unlock()
+		coordinateLock.Unlock()
 	}
 
-	if args.TaskStr == "reduce" {
+	if args.TypeName == "reduce" {
 
-		lock.Lock()
+		coordinateLock.Lock()
 
 		if c.ReduceTask[idx].status != Completed {
 			c.ReduceTask[idx].status = Completed
 		}
 
-		lock.Unlock()
+		coordinateLock.Unlock()
 	}
 	return nil
 }
 
+//读取任务状态 分配任务 返回值中int如果为正数则是worker id, 为-1表示该类任务完成，为-2表示所有任务都在执行
 func AssignTask(tasks []Task) (*Task, int) {
-	lock.RLock()
-	defer lock.RUnlock()
+	coordinateLock.RLock()
+	defer coordinateLock.RUnlock()
 	for i := range tasks {
 		if tasks[i].status == Idle {
 			return &tasks[i], i
 		}
 	}
-	if WorkDone(tasks) {
+	if IsWorkDone(tasks) {
 		return nil, -1 //work done
 	} else {
 		return nil, -2 //all in progress wait
 	}
 }
 
-func WorkDone(tasks []Task) bool {
-	lock.RLock()
-	defer lock.RUnlock()
+//用于判断某一类任务是否完成
+func IsWorkDone(tasks []Task) bool {
+	coordinateLock.RLock()
+	defer coordinateLock.RUnlock()
 	for i := range tasks {
 		if tasks[i].status != Completed {
 			return false
@@ -228,7 +230,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.NReduce = nReduce
 	c.MapTask = make([]Task, len(files))
 	for i := range files {
-		c.MapTask[i].name = append(c.MapTask[i].name, files[i])
+		c.MapTask[i].inputFileName = append(c.MapTask[i].inputFileName, files[i])
 		c.MapTask[i].status = Idle
 	}
 

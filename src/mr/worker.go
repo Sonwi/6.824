@@ -73,20 +73,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 				sort.Sort(ByKey(intermediate))
 
-				outNames := make([]string, NReduce)
-				tempFiles := make([]*os.File, NReduce)
-
-				for i := range outNames {
-					outNames[i] = "mr-map-out-" + strconv.Itoa(reply1.Idx) + "-" + strconv.Itoa(i)
-				}
-
-				for i := range tempFiles {
-					tempFiles[i], err = ioutil.TempFile(".", "out*")
-					if err != nil {
-						log.Fatal("creat tempfile fail")
-					}
-				}
-
 				i := 0
 				reduceInput := make([][]ReduceKv, NReduce)
 				for i < len(intermediate) {
@@ -101,17 +87,23 @@ func Worker(mapf func(string, string) []KeyValue,
 
 					key := intermediate[i].Key
 
+					//根据key分配到不同的reduce任务中
 					idx := ihash(key) % NReduce
 					reduceInput[idx] = append(reduceInput[idx], ReduceKv{Key: key, Value: values})
-
-					// output := reducef(intermediate[i].Key, values)
-
-					// this is the correct format for each line of Reduce output.
-					// fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 
 					i = j
 				}
 
+				//临时文件命名
+				tempFiles := make([]*os.File, NReduce)
+				for i := range tempFiles {
+					tempFiles[i], err = ioutil.TempFile(".", "out*")
+					if err != nil {
+						log.Fatal("creat tempfile fail")
+					}
+				}
+
+				//对象写入临时文件
 				for i := range reduceInput {
 					enc := json.NewEncoder(tempFiles[i])
 					for _, kv := range reduceInput[i] {
@@ -122,25 +114,24 @@ func Worker(mapf func(string, string) []KeyValue,
 					}
 				}
 
+				outNames := make([]string, NReduce)
+
+				//输入文件命名
+				for i := range outNames {
+					outNames[i] = "mr-map-out-" + strconv.Itoa(reply1.Idx) + "-" + strconv.Itoa(i)
+				}
 				//rename
 				for i := range tempFiles {
 					_, err := os.Stat(outNames[i])
 					if os.IsNotExist(err) {
 						os.Rename(tempFiles[i].Name(), outNames[i])
-						if i == len(tempFiles)-1 {
-							//call finish info
-							args := FinishReq{TaskStr: "map", Ret: outNames, Idx: reply1.Idx}
+						if i == len(tempFiles)-1 { //complete work, call finish info
+							args := FinishReq{TypeName: "map", Ret: outNames, Idx: reply1.Idx}
 							reply := FinishReply{}
 							call("Coordinator.HandFinishInfo", &args, &reply)
-							// if ok {
-							// 	log.Println("finish map job success")
-							// } else {
-							// 	log.Println("finish map job fail")
-							// }
-						} else {
-							os.Remove(tempFiles[i].Name())
 						}
 					} else {
+						os.Remove(tempFiles[i].Name()) //remove tempfile
 						break
 					}
 				}
@@ -162,34 +153,33 @@ func Worker(mapf func(string, string) []KeyValue,
 
 					dec := json.NewDecoder(file)
 
-					// for i := 0; i < len(inputFileNames); i++ {
-
 					for {
 						var kv ReduceKv
 						if err := dec.Decode(&kv); err != nil {
 							break
 						}
-						if kvaMap[kv.Key] == nil {
+						if kvaMap[kv.Key] == nil { //map中没有记录,新建
 							kvaMap[kv.Key] = &kv
-						} else {
+						} else { //map中已经记录,追加
 							kvaMap[kv.Key].Value = append(kvaMap[kv.Key].Value, kv.Value...)
 						}
-						// output := reducef(kv.Key, kv.Value)
-						// fmt.Fprintf(oTmpFile, "%v %v\n", kv.Key, output)
 					}
-
-					// }
 				}
+
+				// 写入临时文件
 				for _, kv := range kvaMap {
 					output := reducef(kv.Key, kv.Value)
 					fmt.Fprintf(oTmpFile, "%v %v\n", kv.Key, output)
 				}
-				oname := "mr-out-" + strconv.Itoa(idx)
+
+				// 重命名临时文件
+				outName := "mr-out-" + strconv.Itoa(idx)
 				retName := []string{}
-				_, err := os.Stat(oname)
+				_, err := os.Stat(outName)
 				if os.IsNotExist(err) {
-					os.Rename(oTmpFile.Name(), oname)
-					args := FinishReq{TaskStr: "reduce", Ret: append(retName, oname), Idx: idx}
+					os.Rename(oTmpFile.Name(), outName)
+					//通知Master
+					args := FinishReq{TypeName: "reduce", Ret: append(retName, outName), Idx: idx}
 					reply := FinishReply{}
 					call("Coordinator.HandFinishInfo", &args, &reply)
 					// if ok {
@@ -200,13 +190,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				} else {
 					os.Remove(oTmpFile.Name())
 				}
-			} //else if reply1.TypeName == "allinprogress" {
-			// 	log.Println("all in progress wait")
-			// } else {
-			// 	// time.Sleep(10 * time.Second)
-			// 	log.Println("all job complete, wait to exit")
-			// 	// return
-			// }
+			}
 		} else {
 			break
 		}
